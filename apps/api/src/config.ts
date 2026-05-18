@@ -1,17 +1,22 @@
-import "dotenv/config";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
 import { z } from "zod";
 
 // Resolve the repo root from this module's location so the API works the same
-// whether it's started from the repo root (dev) or `apps/api` (npm workspaces).
-// Both src/config.ts and dist/config.js sit 3 levels under the repo root.
+// whether it's started from the repo root (dev) or `apps/api` (npm workspaces
+// sets cwd to the workspace dir). Both src/config.ts and dist/config.js sit 3
+// levels under the repo root.
 const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
   "..",
   "..",
 );
+
+// Load .env from the repo root rather than process.cwd() — npm workspaces
+// changes cwd to apps/api, so the default dotenv lookup would miss it.
+dotenv.config({ path: path.join(REPO_ROOT, ".env") });
 
 const EnvSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(8787),

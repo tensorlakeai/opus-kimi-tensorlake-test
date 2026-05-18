@@ -5,7 +5,6 @@ build/
 .env.local
 data/*.sqlite
 data/*.sqlite-journal
-tmp/workspaces/*
 tmp/uploads/*
 !tmp/workspaces/.gitkeep
 !tmp/uploads/.gitkeep
