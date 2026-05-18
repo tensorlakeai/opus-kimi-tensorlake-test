@@ -1,21 +1,27 @@
 import { Router } from "express";
+import type { RunnerKind } from "@ai-fix-runner/shared";
 import { StartRunRequestSchema } from "@ai-fix-runner/shared";
 import type { AppConfig } from "../config.js";
 import type { RunStore } from "../db/RunStore.js";
 import type { RepairLoop } from "../orchestrator/RepairLoop.js";
 import type { SerialQueue } from "../orchestrator/runQueue.js";
 import { FIXTURE_IDS } from "../repair/fixtureCatalog.js";
+import {
+  TensorlakeNotConfiguredError,
+  type RunnerFactory,
+} from "../runner/RunnerFactory.js";
 
 export interface RunsRouterDeps {
   cfg: AppConfig;
   runStore: RunStore;
   repairLoop: RepairLoop;
   queue: SerialQueue;
+  runnerFactory: RunnerFactory;
 }
 
 export function runsRouter(deps: RunsRouterDeps): Router {
   const r = Router();
-  const { cfg, runStore, repairLoop, queue } = deps;
+  const { cfg, runStore, repairLoop, queue, runnerFactory } = deps;
 
   r.post("/api/runs", (req, res, next) => {
     (async () => {
@@ -27,12 +33,27 @@ export function runsRouter(deps: RunsRouterDeps): Router {
             details: parsed.error.flatten(),
           });
         }
-        const { source, maxAttempts, commands, runBuildAfterTestsPass } =
-          parsed.data;
+        const {
+          source,
+          maxAttempts,
+          commands,
+          runBuildAfterTestsPass,
+          runner: requestedRunner,
+        } = parsed.data;
+
+        const runner: RunnerKind = requestedRunner ?? cfg.defaultRunner;
+        if (runner === "tensorlake" && !cfg.tensorlake.configured) {
+          return res.status(400).json({
+            error:
+              "Tensorlake runner not configured (TENSORLAKE_API_KEY is not set).",
+          });
+        }
 
         // Source-level gating
         if (source.type === "fixture" && !FIXTURE_IDS.has(source.fixtureId)) {
-          return res.status(404).json({ error: `Unknown fixture '${source.fixtureId}'` });
+          return res
+            .status(404)
+            .json({ error: `Unknown fixture '${source.fixtureId}'` });
         }
         if (source.type === "localPath" && !cfg.allowCustomRepoPaths) {
           return res.status(403).json({
@@ -54,21 +75,40 @@ export function runsRouter(deps: RunsRouterDeps): Router {
           source,
           maxAttempts,
           commands,
+          runner,
         });
 
-        const fixtureId =
-          source.type === "fixture" ? source.fixtureId : null;
+        const fixtureId = source.type === "fixture" ? source.fixtureId : null;
 
-        queue.enqueue(() =>
-          repairLoop.run({
+        queue.enqueue(async () => {
+          let runnerInstance;
+          try {
+            runnerInstance = runnerFactory.create(runner);
+          } catch (err) {
+            const message =
+              err instanceof TensorlakeNotConfiguredError
+                ? err.message
+                : err instanceof Error
+                  ? err.message
+                  : String(err);
+            runStore.markRunRunning(id);
+            runStore.completeRun(id, "error", {
+              finalStatus: "error",
+              errorMessage: message,
+              changedFiles: [],
+            });
+            return;
+          }
+          await repairLoop.run({
+            runner: runnerInstance,
             runId: id,
             source,
             maxAttempts,
             commands,
             runBuildAfterTestsPass,
             fixtureId,
-          }),
-        );
+          });
+        });
 
         res.status(202).json({ runId: id });
       } catch (err) {

@@ -28,7 +28,7 @@ beforeEach(async () => {
     keepWorkspaces: false,
     commandAllowlist: new Set(["node"]),
   });
-  applier = new PatchApplier(runner);
+  applier = new PatchApplier();
 });
 
 afterEach(async () => {
@@ -41,7 +41,7 @@ describe("PatchApplier", () => {
       { type: "fixture", fixtureId: "demo" },
       "p-1",
     );
-    const result = await applier.applyPatch(ws, {
+    const result = await applier.applyPatch(runner, ws, {
       kind: "patch",
       summary: "Add greeting",
       edits: [
@@ -60,7 +60,7 @@ describe("PatchApplier", () => {
       "p-2",
     );
     await expect(
-      applier.applyPatch(ws, {
+      applier.applyPatch(runner, ws, {
         kind: "patch",
         summary: "evil",
         edits: [
@@ -76,7 +76,7 @@ describe("PatchApplier", () => {
       "p-3",
     );
     await expect(
-      applier.applyPatch(ws, {
+      applier.applyPatch(runner, ws, {
         kind: "patch",
         summary: "evil",
         edits: [{ path: "/etc/passwd", mode: "replace_file", content: "x" }],
@@ -90,7 +90,7 @@ describe("PatchApplier", () => {
       "p-4",
     );
     await expect(
-      applier.applyPatch(ws, {
+      applier.applyPatch(runner, ws, {
         kind: "patch",
         summary: "",
         edits: [
@@ -99,7 +99,7 @@ describe("PatchApplier", () => {
       }),
     ).rejects.toThrow();
     await expect(
-      applier.applyPatch(ws, {
+      applier.applyPatch(runner, ws, {
         kind: "patch",
         summary: "ok",
         edits: [],

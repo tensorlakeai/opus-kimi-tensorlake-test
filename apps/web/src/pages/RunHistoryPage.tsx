@@ -54,6 +54,9 @@ export function RunHistoryPage({ onOpen }: Props) {
             <span style={{ color: "#9ca3af" }}>
               {r.attemptCount} attempts
             </span>
+            <span style={{ color: "#9ca3af", fontSize: 12 }}>
+              <code>{r.runner}</code>
+            </span>
             <span style={{ color: "#7c8493", fontSize: 12 }}>
               {new Date(r.createdAt).toLocaleString()}
             </span>

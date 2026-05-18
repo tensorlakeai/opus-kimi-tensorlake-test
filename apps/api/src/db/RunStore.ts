@@ -3,9 +3,11 @@ import type {
   AttemptPhase,
   AttemptStatus,
   AttemptView,
+  CleanupStatus,
   CommandResult,
   CommandsConfig,
   RepoSource,
+  RunnerKind,
   RunStatus,
   RunSummary,
   RunView,
@@ -16,6 +18,7 @@ export interface CreateRunInput {
   source: RepoSource;
   maxAttempts: number;
   commands: CommandsConfig;
+  runner: RunnerKind;
 }
 
 export interface CreateAttemptInput {
@@ -28,6 +31,13 @@ export interface CompleteRunInput {
   finalStatus: RunStatus;
   errorMessage?: string;
   changedFiles: string[];
+}
+
+export interface RunnerMetadataInput {
+  sandboxId: string | null;
+  sandboxName: string | null;
+  image: string | null;
+  remoteRoot: string;
 }
 
 interface RunRow {
@@ -43,6 +53,12 @@ interface RunRow {
   source_json: string;
   created_at: string;
   updated_at: string;
+  runner: RunnerKind;
+  tensorlake_sandbox_id: string | null;
+  tensorlake_sandbox_name: string | null;
+  tensorlake_image: string | null;
+  tensorlake_remote_root: string | null;
+  tensorlake_cleanup_status: CleanupStatus | null;
 }
 
 interface AttemptRow {
@@ -72,6 +88,8 @@ interface CommandRow {
   started_at: string;
   finished_at: string;
   created_at: string;
+  runner: RunnerKind;
+  sandbox_id: string | null;
 }
 
 export class RunStore {
@@ -88,8 +106,8 @@ export class RunStore {
           : input.source.path;
     this.db
       .prepare(
-        `INSERT INTO runs (id, source_type, source_id, status, max_attempts, changed_files_json, commands_json, source_json, created_at, updated_at)
-         VALUES (?, ?, ?, 'queued', ?, '[]', ?, ?, ?, ?)`,
+        `INSERT INTO runs (id, source_type, source_id, status, max_attempts, changed_files_json, commands_json, source_json, created_at, updated_at, runner)
+         VALUES (?, ?, ?, 'queued', ?, '[]', ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -100,6 +118,7 @@ export class RunStore {
         JSON.stringify(input.source),
         now,
         now,
+        input.runner,
       );
     return { id, createdAt: now };
   }
@@ -131,6 +150,35 @@ export class RunStore {
         now,
         runId,
       );
+  }
+
+  attachRunnerMetadata(runId: string, meta: RunnerMetadataInput): void {
+    this.db
+      .prepare(
+        `UPDATE runs SET
+           tensorlake_sandbox_id = ?,
+           tensorlake_sandbox_name = ?,
+           tensorlake_image = ?,
+           tensorlake_remote_root = ?,
+           updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        meta.sandboxId,
+        meta.sandboxName,
+        meta.image,
+        meta.remoteRoot,
+        new Date().toISOString(),
+        runId,
+      );
+  }
+
+  setCleanupStatus(runId: string, status: CleanupStatus): void {
+    this.db
+      .prepare(
+        `UPDATE runs SET tensorlake_cleanup_status = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(status, new Date().toISOString(), runId);
   }
 
   createAttempt(input: CreateAttemptInput): { id: string; createdAt: string } {
@@ -167,8 +215,8 @@ export class RunStore {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO commands (id, attempt_id, command, args_json, cwd, exit_code, signal, stdout, stderr, duration_ms, timed_out, truncated, started_at, finished_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO commands (id, attempt_id, command, args_json, cwd, exit_code, signal, stdout, stderr, duration_ms, timed_out, truncated, started_at, finished_at, created_at, runner, sandbox_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -186,6 +234,8 @@ export class RunStore {
         result.startedAt,
         result.finishedAt,
         now,
+        result.runner ?? "local",
+        result.sandboxId ?? null,
       );
   }
 
@@ -220,6 +270,8 @@ export class RunStore {
         success: c.timed_out === 0 && c.exit_code === 0,
         startedAt: c.started_at,
         finishedAt: c.finished_at,
+        runner: c.runner ?? "local",
+        sandboxId: c.sandbox_id,
       }));
       const patch =
         a.patch_summary !== null
@@ -240,6 +292,18 @@ export class RunStore {
       };
     });
 
+    const runner: RunnerKind = row.runner ?? "local";
+    const tensorlake =
+      runner === "tensorlake"
+        ? {
+            sandboxId: row.tensorlake_sandbox_id,
+            sandboxName: row.tensorlake_sandbox_name,
+            image: row.tensorlake_image,
+            remoteRoot: row.tensorlake_remote_root ?? "/workspace/repo",
+            cleanupStatus: row.tensorlake_cleanup_status,
+          }
+        : null;
+
     return {
       id: row.id,
       status: row.status,
@@ -252,20 +316,29 @@ export class RunStore {
       changedFiles: JSON.parse(row.changed_files_json),
       errorMessage: row.error_message,
       commands: JSON.parse(row.commands_json),
+      runner,
+      tensorlake,
     };
   }
 
   listRecentRuns(limit: number): RunSummary[] {
     const rows = this.db
       .prepare(
-        `SELECT id, status, final_status, source_json, created_at, updated_at,
+        `SELECT id, status, final_status, source_json, created_at, updated_at, runner,
                 (SELECT COUNT(*) FROM attempts WHERE run_id = runs.id) AS attempt_count
          FROM runs ORDER BY created_at DESC LIMIT ?`,
       )
       .all(limit) as Array<
-      Pick<RunRow, "id" | "status" | "final_status" | "source_json" | "created_at" | "updated_at"> & {
-        attempt_count: number;
-      }
+      Pick<
+        RunRow,
+        | "id"
+        | "status"
+        | "final_status"
+        | "source_json"
+        | "created_at"
+        | "updated_at"
+        | "runner"
+      > & { attempt_count: number }
     >;
     return rows.map((r) => ({
       id: r.id,
@@ -277,6 +350,7 @@ export class RunStore {
       attemptCount: r.attempt_count,
       durationMs:
         new Date(r.updated_at).getTime() - new Date(r.created_at).getTime(),
+      runner: r.runner ?? "local",
     }));
   }
 }

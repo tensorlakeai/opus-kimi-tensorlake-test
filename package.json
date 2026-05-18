@@ -14,7 +14,8 @@
     "build": "npm --workspace packages/shared run build && npm --workspace apps/api run build && npm --workspace apps/web run build",
     "test": "npm --workspace packages/shared run test --if-present && npm --workspace apps/api run test",
     "db:migrate": "npm --workspace apps/api run db:migrate",
-    "fixtures:test": "node scripts/fixtures-test.mjs"
+    "fixtures:test": "node scripts/fixtures-test.mjs",
+    "test:tensorlake:live": "node scripts/tensorlake-live-test.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",

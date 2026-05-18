@@ -3,8 +3,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { CommandResult, RepoSource } from "@ai-fix-runner/shared";
 import { copyDirectorySafe, rmSafe } from "../util/fsCopy.js";
+import { resolveSource } from "../util/sourceResolver.js";
 import { createCappedBuffer } from "../util/truncate.js";
-import type { Runner, RunCommandOptions, Workspace } from "./types.js";
+import type {
+  LocalWorkspace,
+  Runner,
+  RunCommandOptions,
+  Workspace,
+} from "./types.js";
 
 export interface LocalRunnerOptions {
   workspaceRoot: string;
@@ -17,53 +23,25 @@ export interface LocalRunnerOptions {
 }
 
 export class LocalRunner implements Runner {
+  readonly kind = "local" as const;
+
   constructor(private readonly opts: LocalRunnerOptions) {}
 
   async prepareWorkspace(
     source: RepoSource,
     runId: string,
-  ): Promise<Workspace> {
+  ): Promise<LocalWorkspace> {
     const target = path.join(this.opts.workspaceRoot, runId);
     await fs.mkdir(target, { recursive: true });
 
-    const sourceDir = await this.resolveSourceDir(source);
-    await copyDirectorySafe(sourceDir, target);
+    const { absDir } = await resolveSource(source, {
+      fixturesRoot: this.opts.fixturesRoot,
+      uploadRoot: this.opts.uploadRoot,
+      allowCustomRepoPaths: this.opts.allowCustomRepoPaths,
+    });
+    await copyDirectorySafe(absDir, target);
 
-    return { id: runId, rootDir: target, source };
-  }
-
-  private async resolveSourceDir(source: RepoSource): Promise<string> {
-    if (source.type === "fixture") {
-      const dir = path.join(this.opts.fixturesRoot, source.fixtureId);
-      await assertDir(dir, `Unknown fixture: ${source.fixtureId}`);
-      const fixturesRoot = path.resolve(this.opts.fixturesRoot);
-      const resolved = path.resolve(dir);
-      if (!resolved.startsWith(fixturesRoot + path.sep)) {
-        throw new Error(`Fixture id escapes fixtures root`);
-      }
-      return resolved;
-    }
-    if (source.type === "localPath") {
-      if (!this.opts.allowCustomRepoPaths) {
-        throw new Error(
-          "Local-path sources are disabled. Set ALLOW_CUSTOM_REPO_PATHS=true to enable.",
-        );
-      }
-      const resolved = path.resolve(source.path);
-      await assertDir(resolved, `localPath does not exist: ${resolved}`);
-      return resolved;
-    }
-    if (source.type === "upload") {
-      const dir = path.join(this.opts.uploadRoot, source.uploadId);
-      await assertDir(dir, `Unknown upload: ${source.uploadId}`);
-      const uploadsRoot = path.resolve(this.opts.uploadRoot);
-      const resolved = path.resolve(dir);
-      if (!resolved.startsWith(uploadsRoot + path.sep)) {
-        throw new Error(`Upload id escapes upload root`);
-      }
-      return resolved;
-    }
-    throw new Error(`Unsupported source type`);
+    return { kind: "local", id: runId, rootDir: target, source };
   }
 
   async runCommand(
@@ -72,6 +50,9 @@ export class LocalRunner implements Runner {
     args: string[],
     options: RunCommandOptions,
   ): Promise<CommandResult> {
+    if (workspace.kind !== "local") {
+      throw new Error("LocalRunner received a non-local workspace");
+    }
     if (!this.opts.commandAllowlist.has(command)) {
       throw new Error(
         `Command not in allowlist: ${command}. Allowed: ${[...this.opts.commandAllowlist].join(", ")}`,
@@ -145,10 +126,15 @@ export class LocalRunner implements Runner {
       timedOut,
       truncated,
       success,
+      runner: "local",
+      sandboxId: null,
     };
   }
 
   async readFile(workspace: Workspace, relPath: string): Promise<string> {
+    if (workspace.kind !== "local") {
+      throw new Error("LocalRunner received a non-local workspace");
+    }
     const full = this.resolveInWorkspace(workspace, relPath);
     return await fs.readFile(full, "utf8");
   }
@@ -158,12 +144,18 @@ export class LocalRunner implements Runner {
     relPath: string,
     content: string,
   ): Promise<void> {
+    if (workspace.kind !== "local") {
+      throw new Error("LocalRunner received a non-local workspace");
+    }
     const full = this.resolveInWorkspace(workspace, relPath);
     await fs.mkdir(path.dirname(full), { recursive: true });
     await fs.writeFile(full, content, "utf8");
   }
 
   async listFiles(workspace: Workspace): Promise<string[]> {
+    if (workspace.kind !== "local") {
+      throw new Error("LocalRunner received a non-local workspace");
+    }
     const results: string[] = [];
     const skip = new Set(["node_modules", ".git"]);
     const root = workspace.rootDir;
@@ -184,11 +176,15 @@ export class LocalRunner implements Runner {
   }
 
   async cleanup(workspace: Workspace): Promise<void> {
+    if (workspace.kind !== "local") return;
     if (this.opts.keepWorkspaces) return;
     await rmSafe(workspace.rootDir);
   }
 
-  private resolveInWorkspace(workspace: Workspace, relPath: string): string {
+  private resolveInWorkspace(
+    workspace: LocalWorkspace,
+    relPath: string,
+  ): string {
     if (path.isAbsolute(relPath)) {
       throw new Error(`Refusing absolute path: ${relPath}`);
     }
@@ -201,14 +197,5 @@ export class LocalRunner implements Runner {
       throw new Error(`Path escapes workspace: ${relPath}`);
     }
     return full;
-  }
-}
-
-async function assertDir(dir: string, msg: string): Promise<void> {
-  try {
-    const stat = await fs.stat(dir);
-    if (!stat.isDirectory()) throw new Error(msg);
-  } catch {
-    throw new Error(msg);
   }
 }

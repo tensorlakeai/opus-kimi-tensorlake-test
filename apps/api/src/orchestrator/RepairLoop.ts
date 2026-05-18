@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import type {
-  CommandResult,
   CommandsConfig,
   RepoSource,
 } from "@ai-fix-runner/shared";
@@ -10,7 +9,6 @@ import type { Runner, Workspace } from "../runner/types.js";
 import type { RunStore } from "../db/RunStore.js";
 
 export interface RepairLoopDeps {
-  runner: Runner;
   repairEngine: RepairEngine;
   patchApplier: PatchApplier;
   runStore: RunStore;
@@ -22,6 +20,7 @@ export interface RepairLoopDeps {
 }
 
 export interface RepairLoopRequest {
+  runner: Runner;
   runId: string;
   source: RepoSource;
   maxAttempts: number;
@@ -37,15 +36,16 @@ const RELEVANT_FILE_GLOBS = [
 ];
 
 /**
- * The repair loop only depends on the Runner, RepairEngine, PatchApplier, and
- * RunStore interfaces. Swapping LocalRunner for TensorlakeRunner (Test 2) does
- * not change this file.
+ * The repair loop depends only on Runner, RepairEngine, PatchApplier, and
+ * RunStore interfaces. The runner is passed per request so the same loop
+ * serves both LocalRunner and TensorlakeRunner runs.
  */
 export class RepairLoop {
   constructor(private readonly deps: RepairLoopDeps) {}
 
   async run(req: RepairLoopRequest): Promise<void> {
-    const { runner, repairEngine, patchApplier, runStore, timeouts } = this.deps;
+    const { repairEngine, patchApplier, runStore, timeouts } = this.deps;
+    const runner = req.runner;
 
     runStore.markRunRunning(req.runId);
     let workspace: Workspace | null = null;
@@ -53,6 +53,15 @@ export class RepairLoop {
 
     try {
       workspace = await runner.prepareWorkspace(req.source, req.runId);
+
+      if (workspace.kind === "tensorlake") {
+        runStore.attachRunnerMetadata(req.runId, {
+          sandboxId: workspace.sandboxId,
+          sandboxName: workspace.sandboxName,
+          image: workspace.image,
+          remoteRoot: workspace.remoteRoot,
+        });
+      }
 
       // -- install --
       const installAttempt = runStore.createAttempt({
@@ -162,7 +171,11 @@ export class RepairLoop {
           return;
         }
 
-        const applied = await patchApplier.applyValidated(workspace, proposal);
+        const applied = await patchApplier.applyValidated(
+          runner,
+          workspace,
+          proposal,
+        );
         for (const f of applied.changedFiles) allChangedFiles.add(f);
         runStore.attachPatchToAttempt(attempt.id, {
           summary: applied.summary,
@@ -191,6 +204,9 @@ export class RepairLoop {
           await runner.cleanup(workspace);
         } catch {
           // best-effort cleanup
+        }
+        if (workspace.kind === "tensorlake" && workspace.cleanupStatus) {
+          runStore.setCleanupStatus(req.runId, workspace.cleanupStatus);
         }
       }
     }

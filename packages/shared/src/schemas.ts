@@ -33,11 +33,22 @@ export const RepoSourceSchema = z.discriminatedUnion("type", [
   UploadSourceSchema,
 ]);
 
+export const RunnerKindSchema = z.enum(["local", "tensorlake"]);
+
 export const StartRunRequestSchema = z.object({
   source: RepoSourceSchema,
   maxAttempts: z.number().int().min(1).max(10).default(3),
   commands: CommandsConfigSchema,
   runBuildAfterTestsPass: z.boolean().default(true),
+  runner: RunnerKindSchema.optional(),
+});
+
+export const StartRunFromUploadRequestSchema = z.object({
+  uploadId: z.string().min(1),
+  maxAttempts: z.number().int().min(1).max(10).default(3),
+  commands: CommandsConfigSchema,
+  runBuildAfterTestsPass: z.boolean().default(true),
+  runner: RunnerKindSchema.optional(),
 });
 
 export const PatchEditSchema = z.object({
@@ -115,6 +126,18 @@ export const CommandResultSchema = z.object({
   timedOut: z.boolean(),
   truncated: z.boolean(),
   success: z.boolean(),
+  runner: RunnerKindSchema.default("local"),
+  sandboxId: z.string().nullable().default(null),
+});
+
+export const CleanupStatusSchema = z.enum(["terminated", "kept", "failed"]);
+
+export const TensorlakeRunMetadataSchema = z.object({
+  sandboxId: z.string().nullable(),
+  sandboxName: z.string().nullable(),
+  image: z.string().nullable(),
+  remoteRoot: z.string(),
+  cleanupStatus: CleanupStatusSchema.nullable(),
 });
 
 export const AttemptViewSchema = z.object({
@@ -143,6 +166,8 @@ export const RunViewSchema = z.object({
   changedFiles: z.array(z.string()),
   errorMessage: z.string().nullable(),
   commands: CommandsConfigSchema,
+  runner: RunnerKindSchema.default("local"),
+  tensorlake: TensorlakeRunMetadataSchema.nullable().default(null),
 });
 
 export const RunSummarySchema = z.object({
@@ -154,12 +179,27 @@ export const RunSummarySchema = z.object({
   updatedAt: z.string(),
   attemptCount: z.number(),
   durationMs: z.number().nullable(),
+  runner: RunnerKindSchema.default("local"),
 });
+
+export const TensorlakePublicConfigSchema = z.discriminatedUnion("configured", [
+  z.object({
+    configured: z.literal(true),
+    defaultImage: z.string().nullable(),
+  }),
+  z.object({
+    configured: z.literal(false),
+    reason: z.string(),
+  }),
+]);
 
 export const PublicConfigSchema = z.object({
   allowCustomRepoPaths: z.boolean(),
   keepWorkspaces: z.boolean(),
   maxStdioBytes: z.number(),
+  defaultRunner: RunnerKindSchema,
+  availableRunners: z.array(RunnerKindSchema),
+  tensorlake: TensorlakePublicConfigSchema,
 });
 
 export const FixturesListSchema = z.object({

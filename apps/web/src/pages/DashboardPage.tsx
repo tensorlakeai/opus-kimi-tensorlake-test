@@ -38,7 +38,7 @@ export function DashboardPage({ onNavigate }: Props) {
       {error && <div className="error-box">{error}</div>}
       <div className="fixture-grid">
         {fixtures.map((f) => (
-          <FixtureCard key={f.id} fixture={f} onRunStarted={start} />
+          <FixtureCard key={f.id} fixture={f} cfg={cfg} onRunStarted={start} />
         ))}
       </div>
 

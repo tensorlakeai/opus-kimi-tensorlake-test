@@ -1,8 +1,13 @@
 # AI Fix Runner
 
-A tiny local "AI coding-agent evaluator": pick a broken repo, run its tests in an isolated temp workspace, ask a repair function for a patch, apply it, rerun tests, and surface the full attempt history.
+A tiny "AI coding-agent evaluator": pick a broken repo, run its tests in an isolated workspace, ask a repair function for a patch, apply it, rerun tests, and surface the full attempt history.
 
-This is **Test 1 of a coding-agent benchmark**. It is intentionally **local-only** — no Docker, no remote sandboxes, no paid APIs. The architecture is designed so the local runner can be swapped for a Tensorlake Sandbox runner in Test 2 without touching the orchestration, repair, or patch logic.
+Two runner backends, selected per request:
+
+- **Local** (Test 1): commands run on your host via `child_process.spawn`. Not a sandbox.
+- **Tensorlake** (Test 2): commands run inside a real [Tensorlake Sandbox](https://docs.tensorlake.ai/sandboxes/introduction). Isolated MicroVM, same repair loop, same UI.
+
+The orchestrator, repair engines, patch applier, routes, DB layer, and frontend are runner-agnostic — `apps/api/src/runner/RunnerFactory.ts` is the one place that decides which runner gets used.
 
 ## What it does
 
@@ -99,7 +104,7 @@ Two modes:
 - **Upload a zip.** The frontend sends a `.zip` to `POST /api/uploads`. The server extracts it safely (refuses entries with `..` or absolute paths, caps total bytes and entry count) into `UPLOAD_ROOT/<uploadId>/`. You then start a run from `POST /api/runs/from-upload`.
 - **Local path.** Disabled by default. Set `ALLOW_CUSTOM_REPO_PATHS=true` in `.env` and restart the API. The frontend will enable the local-path input. The server still validates the path exists; it does not attempt any other sandboxing.
 
-For custom repos, **automatic patching is not available in Test 1.** Install / test / build still run and their logs are shown, but if tests fail the run ends with a `no_patch` message. Wiring a real LLM-backed `RepairEngine` is left for Test 2 (or a follow-up of Test 1).
+For custom repos, **automatic patching is not available yet.** Install / test / build still run (in either runner) and their logs are shown, but if tests fail the run ends with a `no_patch` message. Wiring a real LLM-backed `RepairEngine` is a separate piece of work. Tensorlake mode is the safer way to run arbitrary uploaded repos because the commands execute inside the sandbox, not on your host.
 
 ## Local execution safety
 
@@ -116,40 +121,119 @@ This is a local demo, **not a sandbox.** Be deliberate about what you point it a
 
 ## Environment
 
-`.env` is parsed by `apps/api/src/config.ts`:
+`.env` is parsed by `apps/api/src/config.ts`. The most relevant keys (see `.env.example` for the full list):
 
 ```
 PORT=8787
 DATABASE_URL=./data/ai-fix-runner.sqlite
 WORKSPACE_ROOT=./tmp/workspaces
 UPLOAD_ROOT=./tmp/uploads
-KEEP_WORKSPACES=false      # set to true to keep temp workspaces for debugging
+KEEP_WORKSPACES=false              # keep local temp workspaces for debugging
 ALLOW_CUSTOM_REPO_PATHS=false
 MAX_STDIO_BYTES=200000
+
+RUNNER_DEFAULT=local               # default runner when the request omits `runner`
+
+TENSORLAKE_API_KEY=                # required to enable the tensorlake runner
+TENSORLAKE_DEFAULT_IMAGE=          # leave blank to use Tensorlake's managed default
+TENSORLAKE_CPUS=                   # blank → SDK default
+TENSORLAKE_MEMORY_MB=
+TENSORLAKE_DISK_MB=
+TENSORLAKE_TIMEOUT_SECONDS=900     # sandbox-level idle/wall-clock timeout
+TENSORLAKE_KEEP_SANDBOXES=false    # leave sandboxes alive after the run for debugging
+TENSORLAKE_REMOTE_ROOT=/workspace/repo
 ```
 
-## Architecture / where the Tensorlake swap will land
+## Tensorlake mode (Test 2)
+
+Test 2 adds a second runner backend. Same repair loop, same UI, same patch logic — execution moves into a real Tensorlake Sandbox instead of `child_process.spawn` on your laptop.
+
+### Setup
+
+1. Get a key from <https://docs.tensorlake.ai/platform/authentication> (format: `tl_apiKey_*`).
+2. Put it in `.env` at the repo root:
+   ```
+   TENSORLAKE_API_KEY=tl_apiKey_...
+   ```
+3. Restart the API. `GET /api/config` should now report `tensorlake.configured: true`.
+4. On the dashboard, each fixture card and the custom-repo panel now show a `Local | Tensorlake` toggle.
+
+### What changes per request
+
+POST `/api/runs` accepts a new optional `runner` field:
+
+```bash
+curl -X POST http://localhost:8787/api/runs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "runner": "tensorlake",
+    "source": { "type": "fixture", "fixtureId": "invoice-calculator-bug" },
+    "maxAttempts": 3,
+    "commands": {
+      "install": ["npm", "install"],
+      "test":    ["npm", "test"],
+      "build":   ["npm", "run", "build"]
+    },
+    "runBuildAfterTestsPass": true
+  }'
+```
+
+The `GET /api/runs/:id` response gains a `runner` field and (for Tensorlake runs) a `tensorlake: { sandboxId, sandboxName, image, remoteRoot, cleanupStatus }` block. Each command result also carries `runner` and `sandboxId` so you can trace which sandbox ran it.
+
+Verify all three fixtures in Tensorlake mode at once:
+
+```bash
+npm run test:tensorlake:live      # skips silently if TENSORLAKE_API_KEY isn't set
+```
+
+### What happens under the hood
+
+For each Tensorlake run, the backend:
+
+1. Creates an ephemeral sandbox (`Sandbox.create()` from `tensorlake`). No image specified → Tensorlake's managed default, which has Node and npm pre-installed.
+2. Uploads the selected repo file-by-file into `/workspace/repo` (skipping `node_modules`, `.git`, `.env`, `*.log`). Path-traversal guards apply on both ends.
+3. Sanity-checks that `/workspace/repo/package.json` is present.
+4. Runs `npm install`, then enters the same repair loop: `npm test` → patch (for fixtures) → `npm test` → `npm run build`. All `sandbox.run(...)` calls use `workingDir: "/workspace/repo"`.
+5. Terminates the sandbox in the `finally` block (or leaves it alive if `TENSORLAKE_KEEP_SANDBOXES=true`).
+
+The same Sandbox handle is reused across attempts in one run, so patched files survive between `initial_test` and `after_patch`. SQLite stores `runner`, `tensorlake_sandbox_id`, image, and `tensorlake_cleanup_status` on the run; per command it stores `runner` and `sandbox_id`.
+
+### Debugging a failed sandbox run
+
+Set `TENSORLAKE_KEEP_SANDBOXES=true` and rerun. The detail page will show `cleanup: kept` and the sandbox stays alive — you can `tl sbx list` to find it and inspect it interactively.
+
+### Tensorlake reference
+
+- Sandboxes intro: <https://docs.tensorlake.ai/sandboxes/introduction>
+- Authentication: <https://docs.tensorlake.ai/platform/authentication>
+- Lifecycle: <https://docs.tensorlake.ai/sandboxes/lifecycle>
+- API reference: <https://docs.tensorlake.ai/api-reference/v2/introduction>
+- Sandbox templates: <https://docs.tensorlake.ai/sandboxes/templates>
+
+> **Safety note.** Local mode runs `npm install` / `npm test` directly on your machine — only use it with trusted repos. Tensorlake mode is the safer choice for arbitrary input: untrusted package scripts run inside an isolated MicroVM, not on your host.
+
+## Architecture
 
 ```
 apps/api/src/
-  runner/types.ts            ← Runner interface (the seam)
-  runner/LocalRunner.ts      ← only Test 1 implementation; Test 2 adds TensorlakeRunner here
+  runner/types.ts            ← Runner interface + discriminated Workspace
+  runner/LocalRunner.ts      ← Test 1 backend (child_process.spawn)
+  runner/TensorlakeRunner.ts ← Test 2 backend (tensorlake SDK)
+  runner/RunnerFactory.ts    ← picks a runner per request based on the body's `runner` field
   orchestrator/RepairLoop.ts ← depends ONLY on Runner / RepairEngine / PatchApplier interfaces
   repair/types.ts            ← RepairEngine interface
   repair/FixtureRepairEngine.ts
   repair/NoopRepairEngine.ts
-  patches/PatchApplier.ts
+  patches/PatchApplier.ts    ← stateless; takes the runner as an argument
   patches/schema.ts          ← zod-validated patch shape
-  db/RunStore.ts             ← SQLite persistence
+  db/RunStore.ts             ← SQLite persistence (incl. runner kind + sandbox metadata)
   routes/                    ← health, fixtures, runs, uploads, config
-  index.ts                   ← the only file that binds LocalRunner — swap it for TensorlakeRunner in Test 2
+  util/sourceResolver.ts     ← shared fixture/upload/localPath resolution
+  util/repoWalker.ts         ← shared exclude-aware repo walker (used by both runners)
+  index.ts                   ← wires RunnerFactory, RepairLoop, RunStore
 ```
 
-The repair loop is intentionally runner-agnostic. Test 2's responsibilities are:
-1. Add `apps/api/src/runner/TensorlakeRunner.ts` implementing the same interface against the Sandbox API.
-2. Change the binding in `index.ts`.
-
-No other code should need to change.
+The repair loop, repair engines, patch applier, routes, and frontend all depend only on the `Runner` interface — no code outside `runner/` and `RunnerFactory.ts` knows whether execution is happening locally or inside a sandbox.
 
 ## Troubleshooting
 
@@ -176,4 +260,17 @@ No other code should need to change.
 - [x] `invoice-calculator-bug`, `markdown-parser-bug`, `todo-api-bug` each: initial test fails → patch applied → tests pass → build passes
 - [x] Run history is persisted in SQLite and reachable via `GET /api/runs` and the History page
 - [x] The UI shows attempts, logs, patches, changed files, exit codes, and a final status badge
-- [x] `Runner`, `RepairEngine`, `PatchApplier` are clearly separated; swapping `LocalRunner` for `TensorlakeRunner` is a single-file change in Test 2
+- [x] `Runner`, `RepairEngine`, `PatchApplier` are clearly separated
+
+## Test 2 success criteria (self-check)
+
+- [x] `npm install` resolves `tensorlake@^0.5.14` cleanly.
+- [x] `npm test` still passes without any Tensorlake credentials (local runner regression test + new TensorlakeRunner unit tests with a mocked SDK).
+- [x] `npm run build` produces working dist for shared / api / web.
+- [x] `GET /api/config` reports `defaultRunner`, `availableRunners`, and a `tensorlake.configured` block — and never includes the API key in the response.
+- [x] `POST /api/runs` accepts `runner: "tensorlake"` and dispatches through `TensorlakeRunner`. Same request body with `runner: "local"` (or no `runner` field) still works.
+- [x] When `TENSORLAKE_API_KEY` is missing, `POST /api/runs` with `runner: "tensorlake"` returns a clean 400 and the backend doesn't crash.
+- [x] One sandbox is created per run and reused across attempts (so patched files persist between `initial_test` and `after_patch`).
+- [x] SQLite stores runner kind, sandbox id, image, remote root, cleanup status, and per-command runner / sandbox id.
+- [x] UI exposes a `Local | Tensorlake` selector that's disabled when Tensorlake isn't configured.
+- [ ] *(Requires a live API key)* All three fixtures pass through `npm run test:tensorlake:live`: install → initial_test fails → patch applied → after_patch passes → build passes — all inside the sandbox.

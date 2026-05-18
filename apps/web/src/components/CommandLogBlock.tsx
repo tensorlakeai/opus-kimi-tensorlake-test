@@ -11,6 +11,12 @@ export function CommandLogBlock({ result }: { result: CommandResult }) {
         {result.truncated ? " · truncated" : ""}
       </summary>
       <div className="cmd-meta">cwd: {result.cwd}</div>
+      {result.runner === "tensorlake" && result.sandboxId && (
+        <div className="cmd-meta">
+          runner: tensorlake · sandbox:{" "}
+          <code>{result.sandboxId}</code>
+        </div>
+      )}
       {result.stdout && (
         <div>
           <div className="cmd-meta">stdout</div>

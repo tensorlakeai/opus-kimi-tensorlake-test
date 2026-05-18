@@ -3,6 +3,7 @@ import type {
   PublicConfig,
   RunSummary,
   RunView,
+  RunnerKind,
   StartRunRequest,
 } from "@ai-fix-runner/shared";
 
@@ -54,6 +55,7 @@ export const api = {
     maxAttempts: number;
     commands: StartRunRequest["commands"];
     runBuildAfterTestsPass: boolean;
+    runner?: RunnerKind;
   }) =>
     jsonFetch<{ runId: string }>("/api/runs/from-upload", {
       method: "POST",

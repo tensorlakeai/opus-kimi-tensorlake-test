@@ -1,6 +1,7 @@
 import React, { useState } from "react";
-import type { PublicConfig } from "@ai-fix-runner/shared";
+import type { PublicConfig, RunnerKind } from "@ai-fix-runner/shared";
 import { api } from "../api/client.js";
+import { RunnerSelector } from "./RunnerSelector.js";
 
 interface Props {
   cfg: PublicConfig | null;
@@ -21,6 +22,9 @@ export function CustomRepoPanel({ cfg, onRunStarted }: Props) {
   const [localPath, setLocalPath] = useState("");
   const [maxAttempts, setMaxAttempts] = useState(3);
   const [buildAfter, setBuildAfter] = useState(true);
+  const [runner, setRunner] = useState<RunnerKind>(
+    cfg?.defaultRunner ?? "local",
+  );
 
   async function handleUpload(file: File) {
     setBusy(true);
@@ -49,6 +53,7 @@ export function CustomRepoPanel({ cfg, onRunStarted }: Props) {
           build: [...DEFAULT_COMMANDS.build],
         },
         runBuildAfterTestsPass: buildAfter,
+        runner,
       });
       onRunStarted(r.runId);
     } catch (e) {
@@ -72,6 +77,7 @@ export function CustomRepoPanel({ cfg, onRunStarted }: Props) {
           build: [...DEFAULT_COMMANDS.build],
         },
         runBuildAfterTestsPass: buildAfter,
+        runner,
       });
       onRunStarted(r.runId);
     } catch (e) {
@@ -183,6 +189,7 @@ export function CustomRepoPanel({ cfg, onRunStarted }: Props) {
           />
           Run build after tests pass
         </label>
+        <RunnerSelector cfg={cfg} value={runner} onChange={setRunner} />
       </div>
 
       {error && <div className="error-box">{error}</div>}

@@ -15,7 +15,13 @@ CREATE TABLE IF NOT EXISTS runs (
   commands_json TEXT NOT NULL,
   source_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  runner TEXT NOT NULL DEFAULT 'local',
+  tensorlake_sandbox_id TEXT,
+  tensorlake_sandbox_name TEXT,
+  tensorlake_image TEXT,
+  tensorlake_remote_root TEXT,
+  tensorlake_cleanup_status TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at DESC);
@@ -48,14 +54,51 @@ CREATE TABLE IF NOT EXISTS commands (
   truncated INTEGER NOT NULL DEFAULT 0,
   started_at TEXT NOT NULL,
   finished_at TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  runner TEXT NOT NULL DEFAULT 'local',
+  sandbox_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_commands_attempt_id ON commands(attempt_id);
 `;
 
+// Columns added in Test 2. CREATE TABLE IF NOT EXISTS won't add new columns to
+// an existing table, so we also ALTER conditionally based on PRAGMA table_info
+// for databases created before this migration.
+const RUNS_NEW_COLUMNS: Array<{ name: string; ddl: string }> = [
+  { name: "runner", ddl: "TEXT NOT NULL DEFAULT 'local'" },
+  { name: "tensorlake_sandbox_id", ddl: "TEXT" },
+  { name: "tensorlake_sandbox_name", ddl: "TEXT" },
+  { name: "tensorlake_image", ddl: "TEXT" },
+  { name: "tensorlake_remote_root", ddl: "TEXT" },
+  { name: "tensorlake_cleanup_status", ddl: "TEXT" },
+];
+
+const COMMANDS_NEW_COLUMNS: Array<{ name: string; ddl: string }> = [
+  { name: "runner", ddl: "TEXT NOT NULL DEFAULT 'local'" },
+  { name: "sandbox_id", ddl: "TEXT" },
+];
+
+function ensureColumns(
+  db: Db,
+  table: string,
+  cols: Array<{ name: string; ddl: string }>,
+): void {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string;
+  }>;
+  const have = new Set(rows.map((r) => r.name));
+  for (const c of cols) {
+    if (!have.has(c.name)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${c.name} ${c.ddl};`);
+    }
+  }
+}
+
 export function migrate(db: Db): void {
   db.exec(SCHEMA);
+  ensureColumns(db, "runs", RUNS_NEW_COLUMNS);
+  ensureColumns(db, "commands", COMMANDS_NEW_COLUMNS);
 }
 
 // Allow running this file directly: npm run db:migrate

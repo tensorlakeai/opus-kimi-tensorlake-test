@@ -9,12 +9,14 @@ import { uploadsRouter } from "./routes/uploads.js";
 import type { RunStore } from "./db/RunStore.js";
 import type { RepairLoop } from "./orchestrator/RepairLoop.js";
 import type { SerialQueue } from "./orchestrator/runQueue.js";
+import type { RunnerFactory } from "./runner/RunnerFactory.js";
 
 export interface AppDeps {
   cfg: AppConfig;
   runStore: RunStore;
   repairLoop: RepairLoop;
   queue: SerialQueue;
+  runnerFactory: RunnerFactory;
 }
 
 export function createApp(deps: AppDeps): express.Express {

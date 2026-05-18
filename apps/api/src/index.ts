@@ -9,7 +9,7 @@ import { createSerialQueue } from "./orchestrator/runQueue.js";
 import { PatchApplier } from "./patches/PatchApplier.js";
 import { FixtureRepairEngine } from "./repair/FixtureRepairEngine.js";
 import { NoopRepairEngine } from "./repair/NoopRepairEngine.js";
-import { LocalRunner } from "./runner/LocalRunner.js";
+import { createRunnerFactory } from "./runner/RunnerFactory.js";
 import type { RepairEngine, RepairInput } from "./repair/types.js";
 
 async function main() {
@@ -21,18 +21,9 @@ async function main() {
   migrate(db);
   const runStore = new RunStore(db);
 
-  // ---- Runner binding ----
-  // In Test 1 this is the LocalRunner. In Test 2 this will be a
-  // TensorlakeRunner — same interface, swap one constructor.
-  const runner = new LocalRunner({
-    workspaceRoot: cfg.workspaceRoot,
-    fixturesRoot: cfg.fixturesRoot,
-    uploadRoot: cfg.uploadRoot,
-    maxStdioBytes: cfg.maxStdioBytes,
-    allowCustomRepoPaths: cfg.allowCustomRepoPaths,
-    keepWorkspaces: cfg.keepWorkspaces,
-    commandAllowlist: cfg.commandAllowlist,
-  });
+  // RunnerFactory yields a fresh runner per request. LocalRunner is always
+  // available; TensorlakeRunner is gated on TENSORLAKE_API_KEY.
+  const runnerFactory = createRunnerFactory(cfg);
 
   // ---- Repair engine binding ----
   // Built-in fixtures get deterministic patches; everything else gets a no-op
@@ -47,10 +38,9 @@ async function main() {
     },
   };
 
-  const patchApplier = new PatchApplier(runner);
+  const patchApplier = new PatchApplier();
   const queue = createSerialQueue();
   const repairLoop = new RepairLoop({
-    runner,
     repairEngine: compositeEngine,
     patchApplier,
     runStore,
@@ -61,7 +51,7 @@ async function main() {
     },
   });
 
-  const app = createApp({ cfg, runStore, repairLoop, queue });
+  const app = createApp({ cfg, runStore, repairLoop, queue, runnerFactory });
   app.listen(cfg.port, () => {
     // eslint-disable-next-line no-console
     console.log(`[api] listening on http://localhost:${cfg.port}`);
@@ -69,6 +59,16 @@ async function main() {
     console.log(`[api] workspace root: ${cfg.workspaceRoot}`);
     // eslint-disable-next-line no-console
     console.log(`[api] fixtures root:  ${cfg.fixturesRoot}`);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[api] runners: local${cfg.tensorlake.configured ? ", tensorlake" : ""} (default: ${cfg.defaultRunner})`,
+    );
+    if (!cfg.tensorlake.configured) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[api] TENSORLAKE_API_KEY not set — tensorlake runner disabled`,
+      );
+    }
   });
 }
 

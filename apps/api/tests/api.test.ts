@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
 import type { RunView } from "@ai-fix-runner/shared";
 import { createApp } from "../src/app.js";
+import type { AppConfig } from "../src/config.js";
 import { migrate } from "../src/db/migrate.js";
 import { openDatabase } from "../src/db/sqlite.js";
 import { RunStore } from "../src/db/RunStore.js";
@@ -13,7 +14,7 @@ import { RepairLoop } from "../src/orchestrator/RepairLoop.js";
 import { createSerialQueue } from "../src/orchestrator/runQueue.js";
 import { PatchApplier } from "../src/patches/PatchApplier.js";
 import { FixtureRepairEngine } from "../src/repair/FixtureRepairEngine.js";
-import { LocalRunner } from "../src/runner/LocalRunner.js";
+import { createRunnerFactory } from "../src/runner/RunnerFactory.js";
 
 let server: ReturnType<typeof createApp>;
 let workspaceRoot: string;
@@ -32,7 +33,7 @@ beforeAll(async () => {
   await fs.mkdir(workspaceRoot, { recursive: true });
   await fs.mkdir(uploadRoot, { recursive: true });
 
-  const cfg = {
+  const cfg: AppConfig = {
     port: 0,
     databaseUrl: dbPath,
     workspaceRoot,
@@ -45,16 +46,24 @@ beforeAll(async () => {
     testTimeoutMs: 60_000,
     buildTimeoutMs: 60_000,
     commandAllowlist: new Set(["npm", "npx", "node"]),
+    defaultRunner: "local",
+    tensorlake: {
+      configured: false,
+      timeoutSeconds: 900,
+      keepSandboxes: false,
+      remoteRoot: "/tmp/repo",
+      useNamedSandboxes: false,
+      sandboxNamePrefix: "ai-fix-runner",
+    },
   };
   const db = openDatabase(cfg.databaseUrl);
   migrate(db);
   const runStore = new RunStore(db);
-  const runner = new LocalRunner(cfg);
-  const patchApplier = new PatchApplier(runner);
+  const runnerFactory = createRunnerFactory(cfg);
+  const patchApplier = new PatchApplier();
   const engine = new FixtureRepairEngine();
   const queue = createSerialQueue();
   const repairLoop = new RepairLoop({
-    runner,
     repairEngine: engine,
     patchApplier,
     runStore,
@@ -64,7 +73,7 @@ beforeAll(async () => {
       buildMs: cfg.buildTimeoutMs,
     },
   });
-  server = createApp({ cfg, runStore, repairLoop, queue });
+  server = createApp({ cfg, runStore, repairLoop, queue, runnerFactory });
 });
 
 afterAll(async () => {
@@ -95,11 +104,35 @@ describe("API health + fixtures", () => {
     ]);
   });
 
-  it("GET /api/config exposes the public flags", async () => {
+  it("GET /api/config exposes runner config and never leaks the API key", async () => {
     const r = await request(server).get("/api/config");
     expect(r.status).toBe(200);
     expect(r.body).toHaveProperty("allowCustomRepoPaths");
     expect(r.body).toHaveProperty("keepWorkspaces");
+    expect(r.body).toHaveProperty("defaultRunner", "local");
+    expect(r.body.availableRunners).toEqual(["local"]);
+    expect(r.body.tensorlake.configured).toBe(false);
+    expect(r.body.tensorlake.reason).toMatch(/TENSORLAKE_API_KEY/);
+    // Should never serialize a tensorlake apiKey field.
+    expect(JSON.stringify(r.body)).not.toMatch(/apiKey/i);
+  });
+
+  it("rejects POST /api/runs with runner=tensorlake when not configured", async () => {
+    const r = await request(server)
+      .post("/api/runs")
+      .send({
+        source: { type: "fixture", fixtureId: "invoice-calculator-bug" },
+        maxAttempts: 1,
+        commands: {
+          install: ["npm", "install"],
+          test: ["npm", "test"],
+          build: ["npm", "run", "build"],
+        },
+        runBuildAfterTestsPass: false,
+        runner: "tensorlake",
+      });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toMatch(/Tensorlake.*not configured/);
   });
 });
 
@@ -124,6 +157,7 @@ describe("API end-to-end repair loop", () => {
 
       const final = await waitForTerminal(runId, 240_000);
       expect(final.status).toBe("passed");
+      expect(final.runner).toBe("local");
       expect(final.changedFiles).toContain("src/calculateInvoice.ts");
 
       const phases = final.attempts.map((a) => a.phase);

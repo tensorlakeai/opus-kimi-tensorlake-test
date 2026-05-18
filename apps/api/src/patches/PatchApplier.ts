@@ -11,21 +11,21 @@ export interface AppliedPatchResult {
  * Applies a structured patch (replace_file edits only) through the Runner
  * abstraction. The Runner is responsible for the actual filesystem write —
  * PatchApplier validates the patch and the paths, and delegates file I/O.
- * This keeps PatchApplier reusable when LocalRunner is swapped for
- * TensorlakeRunner.
+ * The Runner is passed per call (rather than stored on the applier) so the
+ * same applier serves both LocalRunner and TensorlakeRunner runs.
  */
 export class PatchApplier {
-  constructor(private readonly runner: Runner) {}
-
   async applyPatch(
+    runner: Runner,
     workspace: Workspace,
     patch: unknown,
   ): Promise<AppliedPatchResult> {
     const parsed = PatchProposalSchema.parse(patch);
-    return await this.applyValidated(workspace, parsed);
+    return await this.applyValidated(runner, workspace, parsed);
   }
 
   async applyValidated(
+    runner: Runner,
     workspace: Workspace,
     patch: PatchProposal,
   ): Promise<AppliedPatchResult> {
@@ -33,7 +33,7 @@ export class PatchApplier {
     for (const edit of patch.edits) {
       // Schema already rejects '..' and absolute paths, but Runner.writeFile
       // also enforces this defensively.
-      await this.runner.writeFile(workspace, edit.path, edit.content);
+      await runner.writeFile(workspace, edit.path, edit.content);
       changed.push(edit.path);
     }
     return { summary: patch.summary, changedFiles: changed };

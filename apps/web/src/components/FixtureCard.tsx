@@ -1,15 +1,24 @@
 import React, { useState } from "react";
-import type { FixtureMetadata } from "@ai-fix-runner/shared";
+import type {
+  FixtureMetadata,
+  PublicConfig,
+  RunnerKind,
+} from "@ai-fix-runner/shared";
 import { api } from "../api/client.js";
+import { RunnerSelector } from "./RunnerSelector.js";
 
 interface Props {
   fixture: FixtureMetadata;
+  cfg: PublicConfig | null;
   onRunStarted: (runId: string) => void;
 }
 
-export function FixtureCard({ fixture, onRunStarted }: Props) {
+export function FixtureCard({ fixture, cfg, onRunStarted }: Props) {
   const [maxAttempts, setMaxAttempts] = useState(3);
   const [building, setBuilding] = useState(true);
+  const [runner, setRunner] = useState<RunnerKind>(
+    cfg?.defaultRunner ?? "local",
+  );
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -22,6 +31,7 @@ export function FixtureCard({ fixture, onRunStarted }: Props) {
         maxAttempts,
         commands: fixture.defaultCommands,
         runBuildAfterTestsPass: building,
+        runner,
       });
       onRunStarted(r.runId);
     } catch (e) {
@@ -64,6 +74,7 @@ export function FixtureCard({ fixture, onRunStarted }: Props) {
         />
         Run build after tests pass
       </label>
+      <RunnerSelector cfg={cfg} value={runner} onChange={setRunner} />
       <button
         className="primary"
         onClick={start}

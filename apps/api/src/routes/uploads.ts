@@ -3,36 +3,31 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import multer from "multer";
-import { z } from "zod";
-import {
-  CommandsConfigSchema,
-  StartRunRequestSchema,
-} from "@ai-fix-runner/shared";
+import type { RunnerKind } from "@ai-fix-runner/shared";
+import { StartRunFromUploadRequestSchema } from "@ai-fix-runner/shared";
 import type { AppConfig } from "../config.js";
 import type { RunStore } from "../db/RunStore.js";
 import type { RepairLoop } from "../orchestrator/RepairLoop.js";
 import type { SerialQueue } from "../orchestrator/runQueue.js";
 import { extractZipSafe } from "../uploads/zipExtractor.js";
+import {
+  TensorlakeNotConfiguredError,
+  type RunnerFactory,
+} from "../runner/RunnerFactory.js";
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
-
-const StartFromUploadSchema = z.object({
-  uploadId: z.string().min(1),
-  maxAttempts: z.number().int().min(1).max(10).default(3),
-  commands: CommandsConfigSchema,
-  runBuildAfterTestsPass: z.boolean().default(true),
-});
 
 export interface UploadsRouterDeps {
   cfg: AppConfig;
   runStore: RunStore;
   repairLoop: RepairLoop;
   queue: SerialQueue;
+  runnerFactory: RunnerFactory;
 }
 
 export function uploadsRouter(deps: UploadsRouterDeps): Router {
   const r = Router();
-  const { cfg, runStore, repairLoop, queue } = deps;
+  const { cfg, runStore, repairLoop, queue, runnerFactory } = deps;
 
   // Multer stores the raw zip in a temp dir; we extract it ourselves.
   const upload = multer({
@@ -50,7 +45,9 @@ export function uploadsRouter(deps: UploadsRouterDeps): Router {
           file.mimetype !== "application/zip"
         ) {
           await fs.rm(file.path, { force: true });
-          return res.status(400).json({ error: "only .zip uploads are accepted" });
+          return res
+            .status(400)
+            .json({ error: "only .zip uploads are accepted" });
         }
         const uploadId = randomUUID();
         const targetDir = path.join(cfg.uploadRoot, uploadId);
@@ -73,14 +70,28 @@ export function uploadsRouter(deps: UploadsRouterDeps): Router {
   r.post("/api/runs/from-upload", (req, res, next) => {
     (async () => {
       try {
-        const parsed = StartFromUploadSchema.safeParse(req.body);
+        const parsed = StartRunFromUploadRequestSchema.safeParse(req.body);
         if (!parsed.success) {
           return res
             .status(400)
             .json({ error: "invalid request", details: parsed.error.flatten() });
         }
-        const { uploadId, maxAttempts, commands, runBuildAfterTestsPass } =
-          parsed.data;
+        const {
+          uploadId,
+          maxAttempts,
+          commands,
+          runBuildAfterTestsPass,
+          runner: requestedRunner,
+        } = parsed.data;
+
+        const runner: RunnerKind = requestedRunner ?? cfg.defaultRunner;
+        if (runner === "tensorlake" && !cfg.tensorlake.configured) {
+          return res.status(400).json({
+            error:
+              "Tensorlake runner not configured (TENSORLAKE_API_KEY is not set).",
+          });
+        }
+
         const dir = path.join(cfg.uploadRoot, uploadId);
         try {
           await fs.stat(dir);
@@ -97,27 +108,41 @@ export function uploadsRouter(deps: UploadsRouterDeps): Router {
         }
 
         const source = { type: "upload" as const, uploadId };
-        const startRunReq = StartRunRequestSchema.parse({
+        const { id } = runStore.createRun({
           source,
           maxAttempts,
           commands,
-          runBuildAfterTestsPass,
+          runner,
         });
-        const { id } = runStore.createRun({
-          source: startRunReq.source,
-          maxAttempts: startRunReq.maxAttempts,
-          commands: startRunReq.commands,
-        });
-        queue.enqueue(() =>
-          repairLoop.run({
+        queue.enqueue(async () => {
+          let runnerInstance;
+          try {
+            runnerInstance = runnerFactory.create(runner);
+          } catch (err) {
+            const message =
+              err instanceof TensorlakeNotConfiguredError
+                ? err.message
+                : err instanceof Error
+                  ? err.message
+                  : String(err);
+            runStore.markRunRunning(id);
+            runStore.completeRun(id, "error", {
+              finalStatus: "error",
+              errorMessage: message,
+              changedFiles: [],
+            });
+            return;
+          }
+          await repairLoop.run({
+            runner: runnerInstance,
             runId: id,
-            source: startRunReq.source,
-            maxAttempts: startRunReq.maxAttempts,
-            commands: startRunReq.commands,
-            runBuildAfterTestsPass: startRunReq.runBuildAfterTestsPass,
+            source,
+            maxAttempts,
+            commands,
+            runBuildAfterTestsPass,
             fixtureId: null,
-          }),
-        );
+          });
+        });
         res.status(202).json({ runId: id });
       } catch (err) {
         next(err);
