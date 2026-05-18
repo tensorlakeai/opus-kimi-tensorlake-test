@@ -1,0 +1,76 @@
+export function parseMarkdown(input: string): string {
+  const lines = input.split("\n");
+  const out: string[] = [];
+  let inList = false;
+  let inCode = false;
+  let codeLines: string[] = [];
+
+  function closeList(): void {
+    if (inList) {
+      out.push("</ul>");
+      inList = false;
+    }
+  }
+
+  function flushCode(): void {
+    out.push("<pre><code>" + escapeHtml(codeLines.join("\n")) + "</code></pre>");
+    codeLines = [];
+  }
+
+  for (const line of lines) {
+    if (line.startsWith("```")) {
+      if (inCode) {
+        inCode = false;
+        flushCode();
+      } else {
+        closeList();
+        inCode = true;
+      }
+      continue;
+    }
+
+    if (inCode) {
+      codeLines.push(line);
+      continue;
+    }
+
+    if (line.trim() === "") {
+      closeList();
+      continue;
+    }
+
+    if (line.startsWith("# ")) {
+      closeList();
+      out.push("<h1>" + escapeHtml(line.slice(2)) + "</h1>");
+      continue;
+    }
+
+    if (line.startsWith("- ")) {
+      if (!inList) {
+        out.push("<ul>");
+        inList = true;
+      }
+      out.push("<li>" + escapeHtml(line.slice(2)) + "</li>");
+      continue;
+    }
+
+    closeList();
+    out.push("<p>" + escapeHtml(line) + "</p>");
+  }
+
+  if (inList) {
+    out.push("</ul>");
+  }
+  if (inCode) {
+    flushCode();
+  }
+
+  return out.join("");
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}

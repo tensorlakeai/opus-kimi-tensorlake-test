@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+data/*.sqlite
+data/*.sqlite-journal
+tmp/workspaces/*
+tmp/uploads/*
+!tmp/workspaces/.gitkeep
+!tmp/uploads/.gitkeep
+*.log
+.DS_Store
+.vite/
+coverage/

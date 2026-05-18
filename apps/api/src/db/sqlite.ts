@@ -1,0 +1,16 @@
+import fs from "node:fs";
+import path from "node:path";
+import Database from "better-sqlite3";
+
+export type Db = Database.Database;
+
+export function openDatabase(databaseUrl: string): Db {
+  const isFile = !databaseUrl.startsWith(":memory:");
+  if (isFile) {
+    fs.mkdirSync(path.dirname(databaseUrl), { recursive: true });
+  }
+  const db = new Database(databaseUrl);
+  db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
+  return db;
+}
