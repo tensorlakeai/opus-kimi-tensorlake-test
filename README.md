@@ -13,10 +13,10 @@ The orchestrator, repair engines, patch applier, routes, DB layer, and frontend 
 
 1. You pick a built-in fixture (or upload a zip / point at a local repo).
 2. The backend copies the repo into a fresh temp workspace.
-3. It runs `npm install`, then `npm test`.
+3. It runs `npm install`, then `pnpm test`.
 4. If tests fail, it asks the **repair engine** for a patch.
 5. It applies the patch to the workspace and reruns tests.
-6. On success it runs `npm run build`.
+6. On success it runs `pnpm run build`.
 7. The frontend shows every command, its stdout/stderr, exit code, duration, the patch summary, and the final result.
 
 For the three built-in fixtures, the repair engine has canned canonical patches. For user-provided repos in Test 1, the engine returns a `no_patch` message explaining that no real LLM is wired in yet.
@@ -40,9 +40,9 @@ Test 1 is about getting the orchestration, runner abstraction, patch application
 ```bash
 cp .env.example .env       # optional — defaults are sensible
 npm install                # installs api + web + shared
-npm test                   # runs unit + 1 integration test (needs npm cache for the fixture install)
-npm run build              # builds shared → api → web
-npm run dev                # starts API on :8787 and web on :5173
+pnpm test                   # runs unit + 1 integration test (needs npm cache for the fixture install)
+pnpm run build              # builds shared → api → web
+pnpm run dev                # starts API on :8787 and web on :5173
 ```
 
 Open <http://localhost:5173>.
@@ -84,7 +84,7 @@ Expected for `invoice-calculator-bug`:
 Run the same sanity check across all three fixtures:
 
 ```bash
-npm run fixtures:test     # talks to the dev API at :8787
+pnpm run fixtures:test     # talks to the dev API at :8787
 ```
 
 ## Built-in fixtures
@@ -111,13 +111,13 @@ For custom repos, **automatic patching is not available yet.** Install / test / 
 This is a local demo, **not a sandbox.** Be deliberate about what you point it at:
 
 - ✅ Commands are passed as `(command, args[])`, never as a shell string. `shell: false`, `spawn` only.
-- ✅ The first token of each command must be in an allowlist (default: `npm`, `npx`, `node`, `pnpm`, `yarn`).
+- ✅ The first token of each command must be in an allowlist (default: `npm`, `pnpm exec`, `node`, `pnpm`, `yarn`).
 - ✅ Commands run inside the **copied** workspace; the original fixture/local path is never mutated.
 - ✅ Path-traversal guards on patch application, zip extraction, and workspace copy.
 - ✅ Per-command timeouts (`install` 120 s, `test` 60 s, `build` 60 s) — kills the process and marks `timedOut: true`.
 - ✅ stdout/stderr are capped at `MAX_STDIO_BYTES` (default 200 KB) and marked `truncated: true`.
 - ✅ `node_modules` and `.git` are skipped when copying user repos.
-- ❌ The repo's package scripts can still run arbitrary code on your machine during `npm install` and `npm test`. Use trusted repos only.
+- ❌ The repo's package scripts can still run arbitrary code on your machine during `npm install` and `pnpm test`. Use trusted repos only.
 
 ## Environment
 
@@ -183,7 +183,7 @@ The `GET /api/runs/:id` response gains a `runner` field and (for Tensorlake runs
 Verify all three fixtures in Tensorlake mode at once:
 
 ```bash
-npm run test:tensorlake:live      # skips silently if TENSORLAKE_API_KEY isn't set
+pnpm run test:tensorlake:live      # skips silently if TENSORLAKE_API_KEY isn't set
 ```
 
 ### What happens under the hood
@@ -193,7 +193,7 @@ For each Tensorlake run, the backend:
 1. Creates an ephemeral sandbox (`Sandbox.create()` from `tensorlake`). No image specified → Tensorlake's managed default, which has Node and npm pre-installed.
 2. Uploads the selected repo file-by-file into `/workspace/repo` (skipping `node_modules`, `.git`, `.env`, `*.log`). Path-traversal guards apply on both ends.
 3. Sanity-checks that `/workspace/repo/package.json` is present.
-4. Runs `npm install`, then enters the same repair loop: `npm test` → patch (for fixtures) → `npm test` → `npm run build`. All `sandbox.run(...)` calls use `workingDir: "/workspace/repo"`.
+4. Runs `npm install`, then enters the same repair loop: `pnpm test` → patch (for fixtures) → `pnpm test` → `pnpm run build`. All `sandbox.run(...)` calls use `workingDir: "/workspace/repo"`.
 5. Terminates the sandbox in the `finally` block (or leaves it alive if `TENSORLAKE_KEEP_SANDBOXES=true`).
 
 The same Sandbox handle is reused across attempts in one run, so patched files survive between `initial_test` and `after_patch`. SQLite stores `runner`, `tensorlake_sandbox_id`, image, and `tensorlake_cleanup_status` on the run; per command it stores `runner` and `sandbox_id`.
@@ -210,7 +210,7 @@ Set `TENSORLAKE_KEEP_SANDBOXES=true` and rerun. The detail page will show `clean
 - API reference: <https://docs.tensorlake.ai/api-reference/v2/introduction>
 - Sandbox templates: <https://docs.tensorlake.ai/sandboxes/templates>
 
-> **Safety note.** Local mode runs `npm install` / `npm test` directly on your machine — only use it with trusted repos. Tensorlake mode is the safer choice for arbitrary input: untrusted package scripts run inside an isolated MicroVM, not on your host.
+> **Safety note.** Local mode runs `npm install` / `pnpm test` directly on your machine — only use it with trusted repos. Tensorlake mode is the safer choice for arbitrary input: untrusted package scripts run inside an isolated MicroVM, not on your host.
 
 ## Architecture
 
@@ -237,9 +237,9 @@ The repair loop, repair engines, patch applier, routes, and frontend all depend 
 
 ## Troubleshooting
 
-- **`npm test` times out** — the integration test runs a real `npm install` in a temp workspace. The first run can be slow if the npm cache is cold. Bump the test timeout in `apps/api/vitest.config.ts` or run with a warm cache.
+- **`pnpm test` times out** — the integration test runs a real `npm install` in a temp workspace. The first run can be slow if the npm cache is cold. Bump the test timeout in `apps/api/vitest.config.ts` or run with a warm cache.
 - **Fixture install fails behind a corporate proxy** — set `npm_config_proxy` / `npm_config_https_proxy` in your shell before starting the dev server.
-- **"command not in allowlist"** — the default allowlist is `npm npx node pnpm yarn`. Extend it in `apps/api/src/config.ts` if you need another tool.
+- **"command not in allowlist"** — the default allowlist is `npm pnpm exec node pnpm yarn`. Extend it in `apps/api/src/config.ts` if you need another tool.
 - **Workspace clutter** — temp workspaces are cleaned up automatically. Set `KEEP_WORKSPACES=true` to keep them for inspection (e.g. to verify the patch was actually written).
 
 ## Intentionally-not-done
@@ -253,9 +253,9 @@ The repair loop, repair engines, patch applier, routes, and frontend all depend 
 ## Test 1 success criteria (self-check)
 
 - [x] `npm install` works at the repo root
-- [x] `npm test` passes (unit tests + 1 integration test that drives the invoice fixture end-to-end)
-- [x] `npm run build` produces working `apps/api/dist` and `apps/web/dist`
-- [x] `npm run dev` boots API on 8787 and Vite on 5173
+- [x] `pnpm test` passes (unit tests + 1 integration test that drives the invoice fixture end-to-end)
+- [x] `pnpm run build` produces working `apps/api/dist` and `apps/web/dist`
+- [x] `pnpm run dev` boots API on 8787 and Vite on 5173
 - [x] `GET /api/fixtures` lists all three fixtures
 - [x] `invoice-calculator-bug`, `markdown-parser-bug`, `todo-api-bug` each: initial test fails → patch applied → tests pass → build passes
 - [x] Run history is persisted in SQLite and reachable via `GET /api/runs` and the History page
@@ -265,12 +265,20 @@ The repair loop, repair engines, patch applier, routes, and frontend all depend 
 ## Test 2 success criteria (self-check)
 
 - [x] `npm install` resolves `tensorlake@^0.5.14` cleanly.
-- [x] `npm test` still passes without any Tensorlake credentials (local runner regression test + new TensorlakeRunner unit tests with a mocked SDK).
-- [x] `npm run build` produces working dist for shared / api / web.
+- [x] `pnpm test` still passes without any Tensorlake credentials (local runner regression test + new TensorlakeRunner unit tests with a mocked SDK).
+- [x] `pnpm run build` produces working dist for shared / api / web.
 - [x] `GET /api/config` reports `defaultRunner`, `availableRunners`, and a `tensorlake.configured` block — and never includes the API key in the response.
 - [x] `POST /api/runs` accepts `runner: "tensorlake"` and dispatches through `TensorlakeRunner`. Same request body with `runner: "local"` (or no `runner` field) still works.
 - [x] When `TENSORLAKE_API_KEY` is missing, `POST /api/runs` with `runner: "tensorlake"` returns a clean 400 and the backend doesn't crash.
 - [x] One sandbox is created per run and reused across attempts (so patched files persist between `initial_test` and `after_patch`).
 - [x] SQLite stores runner kind, sandbox id, image, remote root, cleanup status, and per-command runner / sandbox id.
 - [x] UI exposes a `Local | Tensorlake` selector that's disabled when Tensorlake isn't configured.
-- [ ] *(Requires a live API key)* All three fixtures pass through `npm run test:tensorlake:live`: install → initial_test fails → patch applied → after_patch passes → build passes — all inside the sandbox.
+- [ ] *(Requires a live API key)* All three fixtures pass through `pnpm run test:tensorlake:live`: install → initial_test fails → patch applied → after_patch passes → build passes — all inside the sandbox.
+
+## Dependency installation
+
+Use Node.js 22+ and pnpm 11.28.5. Run `pnpm install --frozen-lockfile` before the
+project build/test commands. The committed policy requires registry releases
+to be at least 24 hours old, rejects missing publish dates, rechecks frozen
+locks, and disables install lifecycle scripts. Run reviewed build steps
+explicitly; do not bypass the delay for a newly published dependency.

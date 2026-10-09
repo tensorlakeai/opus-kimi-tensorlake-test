@@ -1,0 +1,17 @@
+packages:
+- apps/*
+- packages/*
+
+# Security policy applies to registry dependencies and frozen-lockfile installs.
+minimumReleaseAge: 1440 # 24 hours, in minutes
+minimumReleaseAgeStrict: true
+minimumReleaseAgeIgnoreMissingTime: false
+trustLockfile: false
+blockExoticSubdeps: true
+strictDepBuilds: true
+ignoreScripts: true
+optimisticRepeatInstall: false
+
+# Rebuild the reviewed API SQLite addon explicitly before tests/development.
+allowBuilds:
+  better-sqlite3@11.10.0: true

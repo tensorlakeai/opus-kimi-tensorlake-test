@@ -2,20 +2,21 @@
   "name": "ai-fix-runner",
   "version": "0.1.0",
   "private": true,
-  "description": "Local AI Fix Runner — Test 1 of a coding-agent benchmark. Designed so the runner can later be swapped for Tensorlake Sandbox.",
+  "description": "Local AI Fix Runner \u2014 Test 1 of a coding-agent benchmark. Designed so the runner can later be swapped for Tensorlake Sandbox.",
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently -n api,web -c blue,green \"npm run dev:api\" \"npm run dev:web\"",
-    "dev:api": "npm --workspace apps/api run dev",
-    "dev:web": "npm --workspace apps/web run dev",
-    "build": "npm --workspace packages/shared run build && npm --workspace apps/api run build && npm --workspace apps/web run build",
-    "test": "npm --workspace packages/shared run test --if-present && npm --workspace apps/api run test",
-    "db:migrate": "npm --workspace apps/api run db:migrate",
+    "dev": "pnpm run setup:native && concurrently -n api,web -c blue,green \"pnpm run dev:api\" \"pnpm run dev:web\"",
+    "dev:api": "pnpm --filter ./apps/api run dev",
+    "dev:web": "pnpm --filter ./apps/web run dev",
+    "build": "pnpm --filter ./packages/shared run build && pnpm --filter ./apps/api run build && pnpm --filter ./apps/web run build",
+    "test": "pnpm run setup:native && pnpm --filter ./packages/shared run --if-present test && pnpm --filter ./apps/api run test",
+    "db:migrate": "pnpm --filter ./apps/api run db:migrate",
     "fixtures:test": "node scripts/fixtures-test.mjs",
-    "test:tensorlake:live": "node scripts/tensorlake-live-test.mjs"
+    "test:tensorlake:live": "node scripts/tensorlake-live-test.mjs",
+    "setup:native": "pnpm --filter @ai-fix-runner/api --config.ignore-scripts=false rebuild better-sqlite3"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",
@@ -23,5 +24,6 @@
   },
   "engines": {
     "node": ">=18.17"
-  }
+  },
+  "packageManager": "pnpm@11.28.5"
 }
